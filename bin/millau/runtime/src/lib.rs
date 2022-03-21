@@ -21,8 +21,6 @@
 #![recursion_limit = "256"]
 // Runtime-generated enums
 #![allow(clippy::large_enum_variant)]
-// Runtime-generated DecodeLimit::decode_all_With_depth_limit
-#![allow(clippy::unnecessary_mut_passed)]
 // From construct_runtime macro
 #![allow(clippy::from_over_into)]
 
@@ -52,7 +50,7 @@ use sp_runtime::{
 	create_runtime_str, generic, impl_opaque_keys,
 	traits::{Block as BlockT, IdentityLookup, Keccak256, NumberFor, OpaqueKeys},
 	transaction_validity::{TransactionSource, TransactionValidity},
-	ApplyExtrinsicResult, FixedPointNumber, MultiSignature, MultiSigner, Perquintill,
+	ApplyExtrinsicResult, FixedPointNumber, FixedU128, MultiSignature, MultiSigner, Perquintill,
 };
 use sp_std::prelude::*;
 #[cfg(feature = "std")]
@@ -456,10 +454,9 @@ impl pallet_bridge_messages::Config<WithRialtoMessagesInstance> for Runtime {
 	type MessageDeliveryAndDispatchPayment =
 		pallet_bridge_messages::instant_payments::InstantCurrencyPayments<
 			Runtime,
-			(),
+			WithRialtoMessagesInstance,
 			pallet_balances::Pallet<Runtime>,
 			GetDeliveryConfirmationTransactionFee,
-			RootAccountForPayments,
 		>;
 	type OnMessageAccepted = ();
 	type OnDeliveryConfirmed =
@@ -525,7 +522,7 @@ construct_runtime!(
 		BridgeRialtoGrandpa: pallet_bridge_grandpa::{Pallet, Call, Storage},
 		BridgeDispatch: pallet_bridge_dispatch::{Pallet, Event<T>},
 		BridgeRialtoMessages: pallet_bridge_messages::{Pallet, Call, Storage, Event<T>, Config<T>},
-		BridgeRialtoTokenSwap: pallet_bridge_token_swap::{Pallet, Call, Storage, Event<T>},
+		BridgeRialtoTokenSwap: pallet_bridge_token_swap::{Pallet, Call, Storage, Event<T>, Origin<T>},
 
 		// Westend bridge modules.
 		BridgeWestendGrandpa: pallet_bridge_grandpa::<Instance1>::{Pallet, Call, Config<T>, Storage},
@@ -544,6 +541,7 @@ pub type SignedBlock = generic::SignedBlock<Block>;
 pub type BlockId = generic::BlockId<Block>;
 /// The SignedExtension to the basic transaction logic.
 pub type SignedExtra = (
+	frame_system::CheckNonZeroSender<Runtime>,
 	frame_system::CheckSpecVersion<Runtime>,
 	frame_system::CheckTxVersion<Runtime>,
 	frame_system::CheckGenesis<Runtime>,
@@ -757,10 +755,12 @@ impl_runtime_apis! {
 		fn estimate_message_delivery_and_dispatch_fee(
 			_lane_id: bp_messages::LaneId,
 			payload: ToRialtoMessagePayload,
+			rialto_to_this_conversion_rate: Option<FixedU128>,
 		) -> Option<Balance> {
 			estimate_message_dispatch_and_delivery_fee::<WithRialtoMessageBridge>(
 				&payload,
 				WithRialtoMessageBridge::RELAYER_FEE_PERCENT,
+				rialto_to_this_conversion_rate,
 			).ok()
 		}
 
@@ -774,12 +774,6 @@ impl_runtime_apis! {
 				WithRialtoMessagesInstance,
 				WithRialtoMessageBridge,
 			>(lane, begin, end)
-		}
-	}
-
-	impl bp_rialto::FromRialtoInboundLaneApi<Block> for Runtime {
-		fn unrewarded_relayers_state(lane: bp_messages::LaneId) -> bp_messages::UnrewardedRelayersState {
-			BridgeRialtoMessages::inbound_unrewarded_relayers_state(lane)
 		}
 	}
 
@@ -860,7 +854,7 @@ impl_runtime_apis! {
 				fn prepare_outbound_message(
 					params: MessageParams<Self::AccountId>,
 				) -> (rialto_messages::ToRialtoMessagePayload, Balance) {
-					prepare_outbound_message::<WithRialtoMessageBridge>(params)
+					(prepare_outbound_message::<WithRialtoMessageBridge>(params), Self::message_fee())
 				}
 
 				fn prepare_message_proof(
@@ -918,7 +912,6 @@ impl_runtime_apis! {
 			add_benchmark!(params, batches, pallet_bridge_grandpa, BridgeRialtoGrandpa);
 			add_benchmark!(params, batches, pallet_bridge_token_swap, BridgeRialtoTokenSwap);
 
-			if batches.is_empty() { return Err("Benchmark not found for this pallet.".into()) }
 			Ok(batches)
 		}
 	}
@@ -951,49 +944,6 @@ where
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use bp_runtime::Chain;
-	use bridge_runtime_common::messages;
-
-	#[test]
-	fn ensure_millau_message_lane_weights_are_correct() {
-		type Weights = pallet_bridge_messages::weights::MillauWeight<Runtime>;
-
-		pallet_bridge_messages::ensure_weights_are_correct::<Weights>(
-			bp_millau::DEFAULT_MESSAGE_DELIVERY_TX_WEIGHT,
-			bp_millau::ADDITIONAL_MESSAGE_BYTE_DELIVERY_WEIGHT,
-			bp_millau::MAX_SINGLE_MESSAGE_DELIVERY_CONFIRMATION_TX_WEIGHT,
-			bp_millau::PAY_INBOUND_DISPATCH_FEE_WEIGHT,
-			DbWeight::get(),
-		);
-
-		let max_incoming_message_proof_size = bp_rialto::EXTRA_STORAGE_PROOF_SIZE.saturating_add(
-			messages::target::maximal_incoming_message_size(bp_millau::Millau::max_extrinsic_size()),
-		);
-		pallet_bridge_messages::ensure_able_to_receive_message::<Weights>(
-			bp_millau::Millau::max_extrinsic_size(),
-			bp_millau::Millau::max_extrinsic_weight(),
-			max_incoming_message_proof_size,
-			messages::target::maximal_incoming_message_dispatch_weight(
-				bp_millau::Millau::max_extrinsic_weight(),
-			),
-		);
-
-		let max_incoming_inbound_lane_data_proof_size =
-			bp_messages::InboundLaneData::<()>::encoded_size_hint(
-				bp_millau::MAXIMAL_ENCODED_ACCOUNT_ID_SIZE,
-				bp_millau::MAX_UNREWARDED_RELAYERS_IN_CONFIRMATION_TX as _,
-				bp_millau::MAX_UNCONFIRMED_MESSAGES_IN_CONFIRMATION_TX as _,
-			)
-			.unwrap_or(u32::MAX);
-		pallet_bridge_messages::ensure_able_to_receive_confirmation::<Weights>(
-			bp_millau::Millau::max_extrinsic_size(),
-			bp_millau::Millau::max_extrinsic_weight(),
-			max_incoming_inbound_lane_data_proof_size,
-			bp_millau::MAX_UNREWARDED_RELAYERS_IN_CONFIRMATION_TX,
-			bp_millau::MAX_UNCONFIRMED_MESSAGES_IN_CONFIRMATION_TX,
-			DbWeight::get(),
-		);
-	}
 
 	#[test]
 	fn call_size() {

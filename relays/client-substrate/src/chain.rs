@@ -15,10 +15,10 @@
 // along with Parity Bridges Common.  If not, see <http://www.gnu.org/licenses/>.
 
 use bp_messages::MessageNonce;
-use bp_runtime::{Chain as ChainBase, HashOf, TransactionEraOf};
+use bp_runtime::{Chain as ChainBase, EncodedOrDecodedCall, HashOf, TransactionEraOf};
 use codec::{Codec, Encode};
 use frame_support::weights::{Weight, WeightToFeePolynomial};
-use jsonrpsee_ws_client::types::{DeserializeOwned, Serialize};
+use jsonrpsee::core::{DeserializeOwned, Serialize};
 use num_traits::Zero;
 use sc_transaction_pool_api::TransactionStatus;
 use sp_core::{storage::StorageKey, Pair};
@@ -91,10 +91,6 @@ pub trait ChainWithMessages: Chain {
 	/// The method is provided by the runtime that is bridged with this `ChainWithMessages`.
 	const TO_CHAIN_MESSAGE_DETAILS_METHOD: &'static str;
 
-	/// Name of the `From<ChainWithMessages>InboundLaneApi::unrewarded_relayers_state` runtime
-	/// method. The method is provided by the runtime that is bridged with this `ChainWithMessages`.
-	const FROM_CHAIN_UNREWARDED_RELAYERS_STATE: &'static str;
-
 	/// Additional weight of the dispatch fee payment if dispatch is paid at the target chain
 	/// and this `ChainWithMessages` is the target chain.
 	const PAY_INBOUND_DISPATCH_FEE_WEIGHT_AT_CHAIN: Weight;
@@ -138,10 +134,10 @@ pub trait BlockWithJustification<Header> {
 }
 
 /// Transaction before it is signed.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct UnsignedTransaction<C: Chain> {
 	/// Runtime call of this transaction.
-	pub call: C::Call,
+	pub call: EncodedOrDecodedCall<C::Call>,
 	/// Transaction nonce.
 	pub nonce: C::Index,
 	/// Tip included into transaction.
@@ -150,7 +146,7 @@ pub struct UnsignedTransaction<C: Chain> {
 
 impl<C: Chain> UnsignedTransaction<C> {
 	/// Create new unsigned transaction with given call, nonce and zero tip.
-	pub fn new(call: C::Call, nonce: C::Index) -> Self {
+	pub fn new(call: EncodedOrDecodedCall<C::Call>, nonce: C::Index) -> Self {
 		Self { call, nonce, tip: Zero::zero() }
 	}
 
@@ -174,7 +170,7 @@ pub trait TransactionSignScheme {
 	type SignedTransaction: Clone + Debug + Codec + Send + 'static;
 
 	/// Create transaction for given runtime call, signed by given account.
-	fn sign_transaction(param: SignParam<Self>) -> Self::SignedTransaction
+	fn sign_transaction(param: SignParam<Self>) -> Result<Self::SignedTransaction, crate::Error>
 	where
 		Self: Sized;
 

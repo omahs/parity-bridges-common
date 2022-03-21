@@ -17,12 +17,10 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 // RuntimeApi generated functions
 #![allow(clippy::too_many_arguments)]
-// Runtime-generated DecodeLimit::decode_all_With_depth_limit
-#![allow(clippy::unnecessary_mut_passed)]
 
 mod millau_hash;
 
-use bp_messages::{LaneId, MessageDetails, MessageNonce, UnrewardedRelayersState};
+use bp_messages::{LaneId, MessageDetails, MessageNonce};
 use bp_runtime::Chain;
 use frame_support::{
 	weights::{constants::WEIGHT_PER_SECOND, DispatchClass, IdentityFee, Weight},
@@ -33,7 +31,7 @@ use scale_info::TypeInfo;
 use sp_core::{storage::StateVersion, Hasher as HasherT};
 use sp_runtime::{
 	traits::{Convert, IdentifyAccount, Verify},
-	MultiSignature, MultiSigner, Perbill,
+	FixedU128, MultiSignature, MultiSigner, Perbill,
 };
 use sp_std::prelude::*;
 use sp_trie::{LayoutV0, LayoutV1, TrieConfiguration};
@@ -284,10 +282,6 @@ pub const TO_MILLAU_ESTIMATE_MESSAGE_FEE_METHOD: &str =
 /// Name of the `ToMillauOutboundLaneApi::message_details` runtime method.
 pub const TO_MILLAU_MESSAGE_DETAILS_METHOD: &str = "ToMillauOutboundLaneApi_message_details";
 
-/// Name of the `FromMillauInboundLaneApi::unrewarded_relayers_state` runtime method.
-pub const FROM_MILLAU_UNREWARDED_RELAYERS_STATE: &str =
-	"FromMillauInboundLaneApi_unrewarded_relayers_state";
-
 sp_api::decl_runtime_apis! {
 	/// API for querying information about the finalized Millau headers.
 	///
@@ -315,6 +309,7 @@ sp_api::decl_runtime_apis! {
 		fn estimate_message_delivery_and_dispatch_fee(
 			lane_id: LaneId,
 			payload: OutboundPayload,
+			millau_to_this_conversion_rate: Option<FixedU128>,
 		) -> Option<OutboundMessageFee>;
 		/// Returns dispatch weight, encoded payload size and delivery+dispatch fee of all
 		/// messages in given inclusive range.
@@ -326,15 +321,6 @@ sp_api::decl_runtime_apis! {
 			begin: MessageNonce,
 			end: MessageNonce,
 		) -> Vec<MessageDetails<OutboundMessageFee>>;
-	}
-
-	/// Inbound message lane API for messages sent by Millau chain.
-	///
-	/// This API is implemented by runtimes that are receiving messages from Millau chain, not the
-	/// Millau runtime itself.
-	pub trait FromMillauInboundLaneApi {
-		/// State of the unrewarded relayers set at given lane.
-		fn unrewarded_relayers_state(lane: LaneId) -> UnrewardedRelayersState;
 	}
 }
 

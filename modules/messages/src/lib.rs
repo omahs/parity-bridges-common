@@ -170,12 +170,14 @@ pub mod pallet {
 		type TargetHeaderChain: TargetHeaderChain<Self::OutboundPayload, Self::AccountId>;
 		/// Message payload verifier.
 		type LaneMessageVerifier: LaneMessageVerifier<
+			Self::Origin,
 			Self::AccountId,
 			Self::OutboundPayload,
 			Self::OutboundMessageFee,
 		>;
 		/// Message delivery payment.
 		type MessageDeliveryAndDispatchPayment: MessageDeliveryAndDispatchPayment<
+			Self::Origin,
 			Self::AccountId,
 			Self::OutboundMessageFee,
 		>;
@@ -276,16 +278,12 @@ pub mod pallet {
 			payload: T::OutboundPayload,
 			delivery_and_dispatch_fee: T::OutboundMessageFee,
 		) -> DispatchResultWithPostInfo {
-			crate::send_message::<T, I>(
-				origin.into().map_err(|_| BadOrigin)?,
-				lane_id,
-				payload,
-				delivery_and_dispatch_fee,
+			crate::send_message::<T, I>(origin, lane_id, payload, delivery_and_dispatch_fee).map(
+				|sent_message| PostDispatchInfo {
+					actual_weight: Some(sent_message.weight),
+					pays_fee: Pays::Yes,
+				},
 			)
-			.map(|sent_message| PostDispatchInfo {
-				actual_weight: Some(sent_message.weight),
-				pays_fee: Pays::Yes,
-			})
 		}
 
 		/// Pay additional fee for the message.
@@ -313,17 +311,15 @@ pub mod pallet {
 			);
 
 			// withdraw additional fee from submitter
-			let submitter = origin.into().map_err(|_| BadOrigin)?;
 			T::MessageDeliveryAndDispatchPayment::pay_delivery_and_dispatch_fee(
-				&submitter,
+				&origin,
 				&additional_fee,
 				&relayer_fund_account_id::<T::AccountId, T::AccountIdConverter>(),
 			)
 			.map_err(|err| {
 				log::trace!(
 					target: "runtime::bridge-messages",
-					"Submitter {:?} can't pay additional fee {:?} for the message {:?}/{:?} to {:?}: {:?}",
-					submitter,
+					"Submitter can't pay additional fee {:?} for the message {:?}/{:?} to {:?}: {:?}",
 					additional_fee,
 					lane_id,
 					nonce,
@@ -764,21 +760,6 @@ pub mod pallet {
 		) -> Option<MessageData<T::OutboundMessageFee>> {
 			OutboundMessages::<T, I>::get(MessageKey { lane_id: lane, nonce })
 		}
-
-		/// Get state of unrewarded relayers set.
-		pub fn inbound_unrewarded_relayers_state(
-			lane: bp_messages::LaneId,
-		) -> bp_messages::UnrewardedRelayersState {
-			let relayers = InboundLanes::<T, I>::get(&lane).relayers;
-			bp_messages::UnrewardedRelayersState {
-				unrewarded_relayer_entries: relayers.len() as _,
-				messages_in_oldest_entry: relayers
-					.front()
-					.map(|entry| 1 + entry.messages.end - entry.messages.begin)
-					.unwrap_or(0),
-				total_messages: total_unrewarded_messages(&relayers).unwrap_or(MessageNonce::MAX),
-			}
-		}
 	}
 }
 
@@ -795,6 +776,7 @@ pub fn relayer_fund_account_id<AccountId, AccountIdConverter: Convert<H256, Acco
 
 impl<T, I>
 	bp_messages::source_chain::MessagesBridge<
+		T::Origin,
 		T::AccountId,
 		T::OutboundMessageFee,
 		T::OutboundPayload,
@@ -806,7 +788,7 @@ where
 	type Error = sp_runtime::DispatchErrorWithPostInfo<PostDispatchInfo>;
 
 	fn send_message(
-		sender: bp_messages::source_chain::Sender<T::AccountId>,
+		sender: T::Origin,
 		lane: LaneId,
 		message: T::OutboundPayload,
 		delivery_and_dispatch_fee: T::OutboundMessageFee,
@@ -817,7 +799,7 @@ where
 
 /// Function that actually sends message.
 fn send_message<T: Config<I>, I: 'static>(
-	submitter: bp_messages::source_chain::Sender<T::AccountId>,
+	submitter: T::Origin,
 	lane_id: LaneId,
 	payload: T::OutboundPayload,
 	delivery_and_dispatch_fee: T::OutboundMessageFee,
@@ -871,9 +853,8 @@ fn send_message<T: Config<I>, I: 'static>(
 	.map_err(|err| {
 		log::trace!(
 			target: "runtime::bridge-messages",
-			"Message to lane {:?} is rejected because submitter {:?} is unable to pay fee {:?}: {:?}",
+			"Message to lane {:?} is rejected because submitter is unable to pay fee {:?}: {:?}",
 			lane_id,
-			submitter,
 			delivery_and_dispatch_fee,
 			err,
 		);
@@ -1125,6 +1106,20 @@ mod tests {
 	fn get_ready_for_events() {
 		System::<TestRuntime>::set_block_number(1);
 		System::<TestRuntime>::reset_events();
+	}
+
+	fn inbound_unrewarded_relayers_state(
+		lane: bp_messages::LaneId,
+	) -> bp_messages::UnrewardedRelayersState {
+		let relayers = InboundLanes::<TestRuntime, ()>::get(&lane).relayers;
+		bp_messages::UnrewardedRelayersState {
+			unrewarded_relayer_entries: relayers.len() as _,
+			messages_in_oldest_entry: relayers
+				.front()
+				.map(|entry| 1 + entry.messages.end - entry.messages.begin)
+				.unwrap_or(0),
+			total_messages: total_unrewarded_messages(&relayers).unwrap_or(MessageNonce::MAX),
+		}
 	}
 
 	fn send_regular_message() -> Weight {
@@ -1571,7 +1566,7 @@ mod tests {
 				},
 			);
 			assert_eq!(
-				Pallet::<TestRuntime>::inbound_unrewarded_relayers_state(TEST_LANE_ID),
+				inbound_unrewarded_relayers_state(TEST_LANE_ID),
 				UnrewardedRelayersState {
 					unrewarded_relayer_entries: 2,
 					messages_in_oldest_entry: 1,
@@ -1606,7 +1601,7 @@ mod tests {
 				},
 			);
 			assert_eq!(
-				Pallet::<TestRuntime>::inbound_unrewarded_relayers_state(TEST_LANE_ID),
+				inbound_unrewarded_relayers_state(TEST_LANE_ID),
 				UnrewardedRelayersState {
 					unrewarded_relayer_entries: 2,
 					messages_in_oldest_entry: 1,
